@@ -61,7 +61,7 @@ export function Demo() {
           </p>
           <a
             href="#pricing"
-            className="inline-flex items-center px-8 py-3 border border-transparent text-base font-medium rounded-md text-white bg-light-accent dark:bg-dark-accent hover:opacity-90 transition-opacity"
+            className="inline-flex items-center px-8 py-3 border border-transparent text-base font-medium rounded-md text-white bg-primary-600 hover:bg-primary-700 transition-colors"
           >
             Get Started
           </a>
