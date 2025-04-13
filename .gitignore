@@ -52,3 +52,4 @@ coverage/
 *.out
 go.work
 vendor/
+server/saas-server
