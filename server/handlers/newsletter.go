@@ -11,6 +11,7 @@ import (
 
 	"saas-server/database"
 	"saas-server/models"
+	"saas-server/pkg/validation"
 )
 
 // NewsletterHandler handles newsletter subscription requests
@@ -39,14 +40,17 @@ func (h *NewsletterHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sanitize email
+	req.Email = validation.SanitizeInput(req.Email, 255)
+
 	// Validate email
-	if !isValidEmail(req.Email) {
+	if !validation.ValidateEmail(req.Email) {
 		http.Error(w, "Invalid email address", http.StatusBadRequest)
 		return
 	}
 
-	// Trim and lowercase email
-	email := strings.TrimSpace(strings.ToLower(req.Email))
+	// Trim and lowercase email (not needed as sanitization already does this, but keeping for explicitness)
+	email := strings.ToLower(req.Email)
 
 	// Check if email already exists
 	exists, err := h.DB.NewsletterEmailExists(email)
@@ -75,55 +79,50 @@ func (h *NewsletterHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 	// Insert new newsletter subscription
 	err = h.DB.CreateNewsletterSubscription(email)
 	if err != nil {
-		log.Printf("[NewsletterHandler] Error inserting record: %v", err)
+		log.Printf("[NewsletterHandler] Error creating subscription: %v", err)
 		http.Error(w, "Failed to subscribe to newsletter", http.StatusInternalServerError)
 		return
 	}
 
-	// Track newsletter subscription with Plunk
-	err = trackNewsletterSubscription(email)
-	if err != nil {
-		// Log the error but don't fail the request
-		log.Printf("[NewsletterHandler] Error tracking subscription with Plunk: %v", err)
+	// Track subscription with Plunk
+	if err := trackNewsletterSubscription(email); err != nil {
+		log.Printf("[NewsletterHandler] Error tracking subscription: %v", err)
+		// Continue even if tracking fails
 	}
 
-	// Return success response
+	// Return success
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
-		"message": "Successfully subscribed to newsletter",
+		"message": "Thank you for subscribing to our newsletter!",
 	})
 }
 
 // GetAllNewsletterSubscriptions returns all newsletter subscriptions
-// This is typically an admin-only function
+// This is an admin-only function
 func (h *NewsletterHandler) GetAllNewsletterSubscriptions(w http.ResponseWriter, r *http.Request) {
-	// Only allow GET requests
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Query database for all subscriptions
 	subscriptions, err := h.DB.GetAllNewsletterSubscriptions()
 	if err != nil {
-		log.Printf("[NewsletterHandler] Error querying subscriptions: %v", err)
-		http.Error(w, "Failed to retrieve subscriptions", http.StatusInternalServerError)
+		log.Printf("[NewsletterHandler] Error fetching subscriptions: %v", err)
+		http.Error(w, "Failed to fetch newsletter subscriptions", http.StatusInternalServerError)
 		return
 	}
 
-	// Return subscriptions
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(subscriptions)
 }
 
-// Track newsletter subscription with Plunk
+// trackNewsletterSubscription tracks a newsletter subscription with analytics
 func trackNewsletterSubscription(email string) error {
 	plunkAPIKey := os.Getenv("PLUNK_SECRET_API_KEY")
 	if plunkAPIKey == "" {
 		return fmt.Errorf("PLUNK_SECRET_API_KEY not set")
 	}
 
-	// Create the track request
 	type TrackRequest struct {
 		Event      string `json:"event"`
 		Email      string `json:"email"`
