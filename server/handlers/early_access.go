@@ -4,11 +4,10 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"regexp"
-	"strings"
 
 	"saas-server/database"
 	"saas-server/models"
+	"saas-server/pkg/validation"
 )
 
 // EarlyAccessHandler handles early access waiting list requests
@@ -37,14 +36,17 @@ func (h *EarlyAccessHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sanitize email
+	req.Email = validation.SanitizeInput(req.Email, 255)
+
 	// Validate email
-	if !isValidEmail(req.Email) {
+	if !validation.ValidateEmail(req.Email) {
 		http.Error(w, "Invalid email address", http.StatusBadRequest)
 		return
 	}
 
 	// Sanitize referrer
-	req.Referrer = sanitizeReferrer(req.Referrer)
+	req.Referrer = validation.SanitizeReferrer(req.Referrer)
 
 	// Check if email already exists
 	exists, err := h.DB.EarlyAccessEmailExists(req.Email)
@@ -87,44 +89,6 @@ func (h *EarlyAccessHandler) Register(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// isValidEmail validates an email address
-func isValidEmail(email string) bool {
-	// Simple email validation regex
-	emailRegex := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
-	return emailRegex.MatchString(email)
-}
-
-// sanitizeReferrer cleans and validates a referrer string
-func sanitizeReferrer(referrer string) string {
-	// Trim whitespace
-	referrer = strings.TrimSpace(referrer)
-
-	// If empty, return "direct"
-	if referrer == "" {
-		return "direct"
-	}
-
-	// Remove any protocol (http://, https://)
-	referrer = regexp.MustCompile(`^https?://`).ReplaceAllString(referrer, "")
-
-	// Remove paths and parameters
-	if parts := strings.Split(referrer, "/"); len(parts) > 0 {
-		referrer = parts[0]
-	}
-
-	// Remove port if present
-	if parts := strings.Split(referrer, ":"); len(parts) > 0 {
-		referrer = parts[0]
-	}
-
-	// Limit length
-	if len(referrer) > 255 {
-		referrer = referrer[:255]
-	}
-
-	return referrer
-}
-
 // GetAllEarlyAccessRegistrations returns all early access registrations
 // This is typically an admin-only function
 func (h *EarlyAccessHandler) GetAllEarlyAccessRegistrations(w http.ResponseWriter, r *http.Request) {
@@ -134,15 +98,15 @@ func (h *EarlyAccessHandler) GetAllEarlyAccessRegistrations(w http.ResponseWrite
 		return
 	}
 
-	// Query database for all registrations
+	// Get all early access registrations
 	registrations, err := h.DB.GetAllEarlyAccessEntries()
 	if err != nil {
-		log.Printf("[EarlyAccessHandler] Error querying registrations: %v", err)
-		http.Error(w, "Failed to retrieve registrations", http.StatusInternalServerError)
+		log.Printf("[EarlyAccessHandler] Error fetching registrations: %v", err)
+		http.Error(w, "Failed to fetch early access registrations", http.StatusInternalServerError)
 		return
 	}
 
-	// Return registrations
+	// Return registrations as JSON
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(registrations)
 }
