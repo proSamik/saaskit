@@ -1,13 +1,14 @@
 package handlers
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"saas-server/middleware"
+	"saas-server/pkg/email"
+	"saas-server/pkg/validation"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,6 +22,7 @@ type EmailVerificationToken struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
+// SendVerificationEmail handles the request to send an email verification link
 func (h *AuthHandler) SendVerificationEmail(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -40,6 +42,13 @@ func (h *AuthHandler) SendVerificationEmail(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		log.Printf("Error getting user: %v", err)
 		http.Error(w, "Error getting user details", http.StatusInternalServerError)
+		return
+	}
+
+	// Validate email
+	if !validation.ValidateEmail(user.Email) {
+		log.Printf("Invalid email format for user: %s", userID)
+		http.Error(w, "Invalid email address", http.StatusBadRequest)
 		return
 	}
 
@@ -68,87 +77,10 @@ func (h *AuthHandler) SendVerificationEmail(w http.ResponseWriter, r *http.Reque
 	}
 	verificationLink := fmt.Sprintf("%s/auth/verify-email?token=%s", clientURL, token)
 
-	// Send verification email
-	htmlBody := fmt.Sprintf(`
-		<!DOCTYPE html>
-		<html>
-		<head>
-			<style>
-				body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-				.container { max-width: 600px; margin: 0 auto; padding: 20px; }
-				.button {
-					display: inline-block;
-					padding: 12px 24px;
-					background-color: #3b82f6;
-					color: white;
-					text-decoration: none;
-					border-radius: 6px;
-					margin: 20px 0;
-				}
-				.footer { margin-top: 30px; font-size: 14px; color: #666; }
-			</style>
-		</head>
-		<body>
-			<div class="container">
-				<h2>Verify Your Email Address</h2>
-				<p>Thank you for signing up! Please click the button below to verify your email address:</p>
-				
-				<a href="%s" class="button">Verify Email</a>
-				
-				<p>If the button doesn't work, you can also copy and paste this link into your browser:</p>
-				<p>%s</p>
-				
-				<div class="footer">
-					<p>This link will expire in 24 hours for security reasons.</p>
-					<p>If you didn't create an account, you can safely ignore this email.</p>
-				</div>
-			</div>
-		</body>
-		</html>
-	`, verificationLink, verificationLink)
-
-	emailReq := PlunkEmailRequest{
-		To:      user.Email,
-		Subject: "Verify Your Email Address",
-		Body:    htmlBody,
-	}
-
-	// Send email using Plunk
-	jsonData, err := json.Marshal(emailReq)
+	// Send verification email using our email utility
+	err = email.SendVerificationEmail(user.Email, verificationLink)
 	if err != nil {
-		log.Printf("Error marshaling email request: %v", err)
-		http.Error(w, "Error sending verification email", http.StatusInternalServerError)
-		return
-	}
-
-	plunkAPIKey := os.Getenv("PLUNK_SECRET_API_KEY")
-	if plunkAPIKey == "" {
-		log.Printf("PLUNK_SECRET_API_KEY not set")
-		http.Error(w, "Error sending verification email", http.StatusInternalServerError)
-		return
-	}
-
-	req, err := http.NewRequest("POST", "https://api.useplunk.com/v1/send", bytes.NewBuffer(jsonData))
-	if err != nil {
-		log.Printf("Error creating request: %v", err)
-		http.Error(w, "Error sending verification email", http.StatusInternalServerError)
-		return
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+plunkAPIKey)
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Printf("Error sending email: %v", err)
-		http.Error(w, "Error sending verification email", http.StatusInternalServerError)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("Error response from Plunk API: %d", resp.StatusCode)
+		log.Printf("Error sending verification email: %v", err)
 		http.Error(w, "Error sending verification email", http.StatusInternalServerError)
 		return
 	}
@@ -159,6 +91,7 @@ func (h *AuthHandler) SendVerificationEmail(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+// VerifyEmail handles the verification of an email using a token
 func (h *AuthHandler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[Email Verification] Request received - Method: %s", r.Method)
 
@@ -179,9 +112,10 @@ func (h *AuthHandler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[Email Verification] Processing token: %s", req.Token)
 
-	if req.Token == "" {
-		log.Printf("[Email Verification] Empty token received")
-		http.Error(w, "Missing verification token", http.StatusBadRequest)
+	// Validate token format
+	if !validation.ValidateToken(req.Token) {
+		log.Printf("[Email Verification] Invalid token format: %s", req.Token)
+		http.Error(w, "Invalid token format", http.StatusBadRequest)
 		return
 	}
 
