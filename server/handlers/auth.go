@@ -23,6 +23,8 @@ import (
 	"saas-server/database"
 	"saas-server/middleware"
 	"saas-server/models"
+	"saas-server/pkg/email"
+	"saas-server/pkg/validation"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -204,22 +206,25 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate required fields
-	if req.Email == "" {
-		http.Error(w, "Email is required", http.StatusBadRequest)
-		return
-	}
-	if req.Password == "" {
-		http.Error(w, "Password is required", http.StatusBadRequest)
-		return
-	}
-	if req.Name == "" {
-		http.Error(w, "Name is required", http.StatusBadRequest)
+	// Sanitize inputs
+	req.Email = validation.SanitizeInput(req.Email, 255)
+
+	// Validate email
+	if !validation.ValidateEmail(req.Email) {
+		http.Error(w, "Invalid email format", http.StatusBadRequest)
 		return
 	}
 
-	// Validate password strength
-	if err := validatePassword(req.Password); err != nil {
+	// Validate name
+	sanitizedName, err := validation.ValidateName(req.Name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	req.Name = sanitizedName
+
+	// Validate password
+	if err := validation.ValidatePassword(req.Password); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -269,8 +274,10 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Email == "" {
-		sendErrorResponse(w, http.StatusBadRequest, "Email is required")
+	// Sanitize and validate email
+	req.Email = validation.SanitizeInput(req.Email, 255)
+	if !validation.ValidateEmail(req.Email) {
+		sendErrorResponse(w, http.StatusBadRequest, "Invalid email format")
 		return
 	}
 
@@ -399,13 +406,24 @@ func (h *AuthHandler) RequestPasswordReset(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Get user by email
-	user, err := h.db.GetUserByEmail(req.Email)
-	if err != nil {
-		// Don't reveal whether the email exists
+	// Sanitize and validate email
+	req.Email = validation.SanitizeInput(req.Email, 255)
+	if !validation.ValidateEmail(req.Email) {
+		// To prevent email enumeration, always return success even if email is invalid
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{
-			"message": "If your email is registered, you will receive a password reset link",
+			"message": "If your email exists in our system, you will receive password reset instructions.",
+		})
+		return
+	}
+
+	// Check if user exists
+	user, err := h.db.GetUserByEmail(req.Email)
+	if err != nil {
+		// To prevent email enumeration, always return success even if user doesn't exist
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "If your email exists in our system, you will receive password reset instructions.",
 		})
 		return
 	}
@@ -416,25 +434,24 @@ func (h *AuthHandler) RequestPasswordReset(w http.ResponseWriter, r *http.Reques
 
 	// Save reset token
 	if err := h.db.CreatePasswordResetToken(user.ID, token, expiresAt); err != nil {
+		log.Printf("[Auth] Error creating password reset token: %v", err)
 		http.Error(w, "Error creating password reset token", http.StatusInternalServerError)
 		return
 	}
 
-	// Send email with reset link
-	resetLink := fmt.Sprintf("%s/auth/reset-password?token=%s", os.Getenv("FRONTEND_URL"), token)
-	if err := sendPasswordResetEmail(user.Email, resetLink); err != nil {
+	// Generate reset URL
+	resetURL := fmt.Sprintf("%s/auth/reset-password?token=%s", os.Getenv("FRONTEND_URL"), token)
+
+	// Send password reset email using our email utility
+	if err := email.SendPasswordResetEmail(user.Email, resetURL); err != nil {
 		log.Printf("[Auth] Error sending password reset email: %v", err)
-		// Don't expose the error to the client for security
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{
-			"message": "If your email is registered, you will receive a password reset link",
-		})
+		http.Error(w, "Error sending password reset email", http.StatusInternalServerError)
 		return
 	}
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{
-		"message": "If your email is registered, you will receive a password reset link",
+		"message": "If your email exists in our system, you will receive password reset instructions.",
 	})
 }
 
@@ -451,8 +468,14 @@ func (h *AuthHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate token format
+	if !validation.ValidateToken(req.Token) {
+		http.Error(w, "Invalid token format", http.StatusBadRequest)
+		return
+	}
+
 	// Validate password strength
-	if err := validatePassword(req.NewPassword); err != nil {
+	if err := validation.ValidatePassword(req.NewPassword); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -572,7 +595,7 @@ func (h *AuthHandler) VerifyUser(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r.Context())
 	if userID == "" {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-	return
+		return
 	}
 
 	// Try to get status from cache first
