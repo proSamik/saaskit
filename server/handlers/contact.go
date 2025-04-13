@@ -1,12 +1,14 @@
 package handlers
 
 import (
-	"bytes"
 	"encoding/json"
-	"io"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
+
+	"saas-server/pkg/email"
+	"saas-server/pkg/validation"
 )
 
 // ContactHandler handles requests related to contact form submissions
@@ -41,9 +43,32 @@ func (h *ContactHandler) SendContactEmail(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Validate required fields
-	if req.Name == "" || req.Email == "" || req.Message == "" {
-		http.Error(w, "Name, email, and message are required", http.StatusBadRequest)
+	// Validate and sanitize inputs
+	// Validate name
+	sanitizedName, err := validation.ValidateName(req.Name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	req.Name = sanitizedName
+
+	// Validate email
+	req.Email = validation.SanitizeInput(req.Email, 255)
+	if !validation.ValidateEmail(req.Email) {
+		http.Error(w, "Invalid email address", http.StatusBadRequest)
+		return
+	}
+
+	// Sanitize subject
+	req.Subject = validation.SanitizeInput(req.Subject, 200)
+	if req.Subject == "" {
+		req.Subject = "Contact Form Submission"
+	}
+
+	// Sanitize message for XSS protection
+	req.Message = validation.SanitizeHTML(req.Message)
+	if req.Message == "" {
+		http.Error(w, "Message is required", http.StatusBadRequest)
 		return
 	}
 
@@ -55,85 +80,26 @@ func (h *ContactHandler) SendContactEmail(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Set default subject if empty
-	subject := "Contact Form Submission"
-	if req.Subject != "" {
-		subject = req.Subject
-	}
-
 	// Prepare email content
-	emailContent := `
+	subject := fmt.Sprintf("Contact Form: %s", req.Subject)
+
+	emailContent := fmt.Sprintf(`
 <h1>New Contact Form Submission</h1>
-<p><strong>From:</strong> ` + req.Name + ` (` + req.Email + `)</p>
-<p><strong>Subject:</strong> ` + subject + `</p>
+<p><strong>From:</strong> %s (%s)</p>
+<p><strong>Subject:</strong> %s</p>
 <p><strong>Message:</strong></p>
-<p>` + req.Message + `</p>
-`
+<p>%s</p>
+`, req.Name, req.Email, req.Subject, req.Message)
 
-	// Create email request for Plunk API
-	emailReq := map[string]interface{}{
-		"to":      adminEmail,
-		"subject": "Contact Form: " + subject,
-		"body":    emailContent,
-		"reply":   req.Email, // Set reply-to to the contact form submitter's email
-	}
-
-	// Send email using Plunk API
-	jsonData, err := json.Marshal(emailReq)
-	if err != nil {
-		log.Printf("[ContactHandler] Error marshaling email request: %v", err)
+	// Send email using our email utility
+	if err := email.SendEmail(adminEmail, subject, emailContent); err != nil {
+		log.Printf("[ContactHandler] Error sending contact email: %v", err)
 		http.Error(w, "Error sending email", http.StatusInternalServerError)
 		return
 	}
 
-	plunkAPIKey := os.Getenv("PLUNK_SECRET_API_KEY")
-	if plunkAPIKey == "" {
-		log.Printf("[ContactHandler] PLUNK_SECRET_API_KEY not set")
-		http.Error(w, "Error sending email", http.StatusInternalServerError)
-		return
-	}
-
-	// Create HTTP request to Plunk API
-	plunkReq, err := http.NewRequest("POST", "https://api.useplunk.com/v1/send", bytes.NewBuffer(jsonData))
-	if err != nil {
-		log.Printf("[ContactHandler] Error creating request: %v", err)
-		http.Error(w, "Error sending email", http.StatusInternalServerError)
-		return
-	}
-
-	// Set headers
-	plunkReq.Header.Set("Content-Type", "application/json")
-	plunkReq.Header.Set("Authorization", "Bearer "+plunkAPIKey)
-
-	// Add reply-to header via Plunk API custom headers
-	// Note: Plunk doesn't directly support reply-to in their basic API
-	// Consider adding custom headers if Plunk supports it in the future
-
-	// Send request
-	client := &http.Client{}
-	resp, err := client.Do(plunkReq)
-	if err != nil {
-		log.Printf("[ContactHandler] Error sending email: %v", err)
-		http.Error(w, "Error sending email", http.StatusInternalServerError)
-		return
-	}
-	defer resp.Body.Close()
-
-	// Read and log the response body for debugging
-	respBody, _ := io.ReadAll(resp.Body)
-	log.Printf("[ContactHandler] Plunk API response: %s", string(respBody))
-
-	// Check response
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("[ContactHandler] Error response from Plunk API: %d - %s", resp.StatusCode, string(respBody))
-		http.Error(w, "Error sending email", http.StatusInternalServerError)
-		return
-	}
-
-	// Return success response
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{
-		"message": "Email sent successfully",
+		"message": "Thank you for contacting us! We'll get back to you soon.",
 	})
 }
