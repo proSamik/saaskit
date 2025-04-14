@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"saas-server/database"
 	"saas-server/handlers"
@@ -125,13 +126,16 @@ func main() {
 	emailHandler := &handlers.Handler{DB: db}
 	mux.Handle("/admin/send-email", adminMiddleware.RequireAdmin(http.HandlerFunc(emailHandler.AdminSendEmailHandler)))
 
-	// Contact form route - public, no authentication required
-	contactHandler := handlers.NewContactHandler()
-	mux.HandleFunc("/api/contact", contactHandler.SendContactEmail)
+	// Rate limiter for public endpoints (e.g., 5 requests per minute)
+	publicRateLimiter := middleware.NewRateLimiter(1 * time.Minute, 5)
 
-	// Early access waitlist route - public, no authentication required
+	// Contact form route - public, rate-limited only (no CSRF)
+	contactHandler := handlers.NewContactHandler()
+	mux.Handle("/api/contact", publicRateLimiter.Limit(http.HandlerFunc(contactHandler.SendContactEmail)))
+
+	// Early access waitlist route - public, rate-limited only (no CSRF)
 	earlyAccessHandler := handlers.NewEarlyAccessHandler(db)
-	mux.HandleFunc("/api/early-access", earlyAccessHandler.Register)
+	mux.Handle("/api/early-access", publicRateLimiter.Limit(http.HandlerFunc(earlyAccessHandler.Register)))
 
 	// Admin-only route to view all early access registrations
 	mux.Handle("/admin/early-access", adminMiddleware.RequireAdmin(http.HandlerFunc(earlyAccessHandler.GetAllEarlyAccessRegistrations)))
