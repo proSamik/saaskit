@@ -20,20 +20,21 @@ const Navigation = () => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
 
+  /**
+   * Handles user logout by clearing the authentication state
+   * and redirecting to the home page.
+   */
   const handleLogout = async () => {
     try {
-      await authService.logout()
-      contextLogout()
-      router.push('/')
-    } catch (error) {
-      console.error('[Navigation] Logout failed:', error)
-      // Still clear local state even if API call fails
-      contextLogout()
-      router.push('/')
+      contextLogout() // Clear React state immediately
+      await authService.logout() // Handle API call and redirection
+    } catch (error: any) {
+      console.error('[Navigation] Catastrophic error during logout:', error)
+      window.location.href = '/' // Force redirect as last resort
     }
   }
 
-  // Close dropdown when clicking outside
+  // Effect to close dropdown when clicking outside
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
@@ -96,6 +97,14 @@ const Navigation = () => {
                   className="text-sm font-medium text-light-foreground dark:text-dark-foreground hover:text-primary-600 transition-colors"
                 >
                   Overview
+                </Link>
+              )}
+              {auth && (
+                <Link
+                  href="/boards"
+                  className="text-sm font-medium text-light-foreground dark:text-dark-foreground hover:text-primary-600 transition-colors"
+                >
+                  Boards
                 </Link>
               )}
             </div>
@@ -212,6 +221,15 @@ const Navigation = () => {
                   onClick={() => setIsMobileMenuOpen(false)}
                 >
                   Overview
+                </Link>
+              )}
+              {auth && (
+                <Link
+                  href="/boards"
+                  className="block py-2 text-base font-medium text-light-muted dark:text-dark-muted hover:text-light-foreground dark:hover:text-dark-foreground"
+                  onClick={() => setIsMobileMenuOpen(false)}
+                >
+                  Boards
                 </Link>
               )}
             </div>
